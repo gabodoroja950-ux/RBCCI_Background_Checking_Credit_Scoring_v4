@@ -3430,10 +3430,20 @@
         renderDriveQueue();
 
         try {
+          // Check file size — Apps Script has a 6MB POST limit
+          if (driveQueue[i].file.size > 4 * 1024 * 1024) {
+            driveQueue[i].status = 'error';
+            toast('✗ ' + driveQueue[i].file.name + ' is too large (max 4MB)');
+            renderDriveQueue();
+            continue;
+          }
+
           var b64 = await fileToBase64(driveQueue[i].file);
 
+          // Use no-cors redirect:follow to handle Apps Script redirects
           var resp = await fetch(ILS_SHEET_URL, {
-            method: 'POST',
+            method:   'POST',
+            redirect: 'follow',
             body: JSON.stringify({
               __action: 'uploadFileToDrive',
               appCode:  appCode,
@@ -3443,12 +3453,25 @@
             })
           });
 
-          var result = await resp.json();
+          // Safely parse response — handle non-JSON gracefully
+          var result;
+          var rawText = await resp.text();
+          try {
+            result = JSON.parse(rawText);
+          } catch(parseErr) {
+            // Apps Script sometimes returns HTML on auth errors
+            driveQueue[i].status = 'error';
+            toast('✗ Server error — check Apps Script authorization');
+            console.error('Non-JSON response from Apps Script:', rawText.slice(0, 300));
+            renderDriveQueue();
+            continue;
+          }
 
           if (result.result === 'success') {
             driveQueue[i].status = 'done';
             driveQueue[i].url    = result.fileUrl;
             links.push({ name: driveQueue[i].file.name, url: result.fileUrl });
+            toast('✅ ' + driveQueue[i].file.name + ' uploaded to Drive!');
             // Update folder link in bar
             if (result.folderUrl) {
               var lnk = document.getElementById('driveFolderLink');
@@ -3456,12 +3479,16 @@
             }
           } else {
             driveQueue[i].status = 'error';
-            console.error('Upload error:', result.message);
+            // Show the actual error to the user — no more silent failures
+            var errMsg = result.message || 'Unknown error';
+            toast('✗ Upload failed: ' + errMsg);
+            console.error('Drive upload error:', errMsg);
           }
 
         } catch(e) {
           driveQueue[i].status = 'error';
-          console.error('Upload exception:', e);
+          toast('✗ Upload error: ' + e.message);
+          console.error('Drive upload exception:', e);
         }
 
         renderDriveQueue();
