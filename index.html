@@ -1671,18 +1671,59 @@
             <div class="fi"><label>Co-Maker / Guarantor</label><input value="Pedro C. Almonte"></div>
             <div class="fi"><label>Source of Repayment</label><input value="Farm income + copra trading"></div>
           </div>
-          <div class="sh">Supporting Documents <span class="tg">Upload</span></div>
-          <div class="upload-area" onclick="document.getElementById('fileIn').click()">
-            <div class="ua-icon">&#x1F4C1;</div>
-            <div class="ua-text">Click or drag files here to upload</div>
-            <div class="ua-sub">Word, PDF, Excel, images accepted</div>
-            <input type="file" id="fileIn" multiple accept=".doc,.docx,.pdf,.xlsx,.xls,.jpg,.png" style="display:none"
-              onchange="handleFiles(this,'fileList')">
-          </div>
-          <div class="file-chips" id="fileList">
-            <span class="file-chip">&#x1F4C4; Valid_ID_Santos.pdf</span>
-            <span class="file-chip">&#x1F4CA; Income_Proof.xlsx</span>
-            <span class="file-chip">&#x1F4F7; Collateral_Photo.jpg</span>
+          <div class="sh">Supporting Documents <span class="tg">&#x1F4C1; Upload to Google Drive</span></div>
+
+          <!-- ── DRIVE UPLOAD PANEL ── -->
+          <div id="driveUploadPanel" style="
+            background:linear-gradient(135deg,#f0faf4,#fff);
+            border:1.5px solid var(--n1);border-radius:var(--r);
+            padding:14px 16px;margin-bottom:10px;">
+
+            <!-- Status bar: shows client folder link once loaded -->
+            <div id="driveFolderBar" style="display:none;margin-bottom:10px;
+              background:#e0f5e7;border:1px solid #a7dfb8;border-radius:6px;
+              padding:8px 12px;font-size:.78rem;font-weight:600;color:#1a5c30;
+              display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span>&#x1F4C2;</span>
+              <span id="driveFolderLabel">Client folder ready</span>
+              <a id="driveFolderLink" href="#" target="_blank"
+                style="margin-left:auto;color:#1a6fa8;font-size:.74rem;text-decoration:underline;">
+                Open in Drive ↗
+              </a>
+            </div>
+
+            <!-- No app code warning -->
+            <div id="driveNoCodeWarn" style="
+              background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
+              padding:8px 12px;font-size:.76rem;color:#7a5700;margin-bottom:10px;display:none;">
+              ⚠ Load a client via App Code first — files will be saved to that client's Drive folder.
+            </div>
+
+            <!-- Drop zone -->
+            <div class="upload-area" id="driveDropZone"
+              onclick="document.getElementById('fileIn').click()"
+              ondragover="event.preventDefault();this.style.borderColor='var(--d3)'"
+              ondragleave="this.style.borderColor=''"
+              ondrop="event.preventDefault();this.style.borderColor='';driveHandleDrop(event)">
+              <div class="ua-icon">&#x2601;&#xFE0F;</div>
+              <div class="ua-text">Click or drag files to queue for Drive upload</div>
+              <div class="ua-sub">PDF, Word, Excel, images · Files upload when you click <strong>Save to Sheets</strong></div>
+              <input type="file" id="fileIn" multiple
+                accept=".doc,.docx,.pdf,.xlsx,.xls,.jpg,.jpeg,.png,.gif"
+                style="display:none" onchange="driveQueueFiles(this.files)">
+            </div>
+
+            <!-- Queued file list -->
+            <div id="driveFileList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+
+            <!-- Upload summary (shown after save) -->
+            <div id="driveUploadSummary" style="display:none;margin-top:10px;
+              background:#e0f5e7;border:1px solid #a7dfb8;border-radius:6px;padding:10px 14px;">
+              <div style="font-size:.78rem;font-weight:700;color:#1a5c30;margin-bottom:6px;">
+                &#x2705; Uploaded to Google Drive
+              </div>
+              <div id="driveUploadLinks" style="font-size:.74rem;display:flex;flex-direction:column;gap:4px;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -3190,11 +3231,24 @@
       btn.disabled = true; btn.textContent = '⟳ Saving…';
 
       var loadedCode = document.getElementById('ilsCodeInput').dataset.loadedCode || '';
-      var loadedName = document.getElementById('ilsCodeInput').dataset.loadedName || gv('fN');
+      var appCode    = loadedCode || ('BI-' + new Date().getTime());
+
+      // ── STEP 1: Upload queued files to Google Drive ──────────────────────
+      var driveLinks = [];
+      try {
+        btn.textContent = '☁ Uploading files…';
+        driveLinks = await driveUploadAll(appCode);
+      } catch(e) {
+        console.warn('Drive upload warning:', e);
+        // Non-fatal — continue saving to Sheets even if Drive upload fails
+      }
+
+      // ── STEP 2: Save form data to Google Sheets ──────────────────────────
+      btn.textContent = '⟳ Saving to Sheets…';
 
       var payload = {
         __action:        'saveBackgroundCheck',
-        appCode:         loadedCode || ('BI-' + new Date().getTime()),
+        appCode:         appCode,
         fullName:        gv('fN'),
         refNo:           gv('fR'),
         dateSaved:       new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' }),
@@ -3215,6 +3269,7 @@
         totalScore:      document.getElementById('totalScore') ? document.getElementById('totalScore').textContent : '',
         scoreRating:     document.getElementById('scoreRating') ? document.getElementById('scoreRating').textContent : '',
         recommendation:  document.getElementById('autoRec') ? document.getElementById('autoRec').textContent : '',
+        uploadedFiles:   driveLinks.map(function(l){ return l.name + ': ' + l.url; }).join(' | '),
         timestamp:       new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })
       };
 
@@ -3222,7 +3277,9 @@
         var resp = await fetch(ILS_SHEET_URL, { method: 'POST', body: JSON.stringify(payload) });
         var result = await resp.json();
         if (result.result === 'success') {
-          toast('✓ Background Check saved to Google Sheets!');
+          var msg = '✓ Saved to Google Sheets!';
+          if (driveLinks.length) msg += ' ' + driveLinks.length + ' file(s) uploaded to Drive.';
+          toast(msg);
         } else {
           throw new Error(result.message || 'Save failed');
         }
@@ -3239,6 +3296,208 @@
       if (inp) inp.addEventListener('keydown', function(e){ if(e.key==='Enter') ilsFetchByCode(); });
     });
 
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       GOOGLE DRIVE FILE UPLOAD ENGINE
+  ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+  (function() {
+    'use strict';
+
+    // ── Queued files: [{ file: File, status: 'queued'|'uploading'|'done'|'error', url: '' }]
+    var driveQueue = [];
+
+    // ── Show/hide the "no app code" warning ─────────────────────────────────
+    function driveCheckCode() {
+      var code = (document.getElementById('ilsCodeInput').dataset.loadedCode || '').trim();
+      var warn = document.getElementById('driveNoCodeWarn');
+      var zone = document.getElementById('driveDropZone');
+      if (!code) {
+        if (warn) warn.style.display = 'block';
+        if (zone) zone.style.opacity = '0.5';
+      } else {
+        if (warn) warn.style.display = 'none';
+        if (zone) zone.style.opacity = '1';
+        // Show folder bar
+        showFolderBar(code);
+      }
+    }
+
+    function showFolderBar(code) {
+      var bar   = document.getElementById('driveFolderBar');
+      var label = document.getElementById('driveFolderLabel');
+      var link  = document.getElementById('driveFolderLink');
+      if (!bar) return;
+      bar.style.display = 'flex';
+      if (label) label.textContent = 'Client folder: ' + code;
+      // Try to fetch the folder URL from Drive via Apps Script
+      fetch(ILS_SHEET_URL, {
+        method: 'POST',
+        body: JSON.stringify({ __action: 'getClientFolderUrl', appCode: code })
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        if (res.result === 'success' && res.folderUrl && link) {
+          link.href = res.folderUrl;
+          link.textContent = 'Open in Drive ↗';
+        } else if (link) {
+          link.textContent = '(folder will be created on upload)';
+          link.href = '#';
+        }
+      })
+      .catch(function(){ if (link) link.textContent = '(folder will be created on upload)'; });
+    }
+
+    // ── Handle files from input or drag-drop ────────────────────────────────
+    window.driveQueueFiles = function(files) {
+      for (var i = 0; i < files.length; i++) {
+        driveQueue.push({ file: files[i], status: 'queued', url: '' });
+      }
+      renderDriveQueue();
+      driveCheckCode();
+    };
+
+    window.driveHandleDrop = function(e) {
+      var files = e.dataTransfer.files;
+      window.driveQueueFiles(files);
+    };
+
+    // ── Render the queued file list ──────────────────────────────────────────
+    function renderDriveQueue() {
+      var list = document.getElementById('driveFileList');
+      if (!list) return;
+      list.innerHTML = '';
+      driveQueue.forEach(function(item, idx) {
+        var ext  = item.file.name.split('.').pop().toLowerCase();
+        var icon = ext==='pdf'?'📄':ext==='xlsx'||ext==='xls'?'📊':ext==='doc'||ext==='docx'?'📝':ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'?'🖼️':'📎';
+        var size = (item.file.size / 1024).toFixed(1) + ' KB';
+        var statusIcon = item.status==='done'?'✅':item.status==='uploading'?'⏳':item.status==='error'?'❌':'🕐';
+        var statusColor= item.status==='done'?'#1a5c30':item.status==='error'?'#b02a1f':item.status==='uploading'?'#1a6fa8':'#555';
+        var row = document.createElement('div');
+        row.id  = 'driveRow_' + idx;
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8faf9;border:1px solid #d2e3d8;border-radius:6px;font-size:.78rem;';
+        row.innerHTML =
+          '<span style="font-size:1rem">' + icon + '</span>' +
+          '<span style="flex:1;font-weight:600;color:#1e3328;word-break:break-all;">' + item.file.name + '</span>' +
+          '<span style="color:#6d9a7e;white-space:nowrap">' + size + '</span>' +
+          (item.status==='done' && item.url
+            ? '<a href="' + item.url + '" target="_blank" style="color:#1a6fa8;font-size:.72rem;white-space:nowrap">View ↗</a>'
+            : '') +
+          '<span id="driveStatus_' + idx + '" style="font-size:.82rem;color:' + statusColor + ';white-space:nowrap">' + statusIcon + '</span>' +
+          (item.status==='queued'
+            ? '<button onclick="driveRemove(' + idx + ')" style="background:none;border:none;color:#b02a1f;cursor:pointer;font-size:.8rem;padding:0 4px">✕</button>'
+            : '');
+        list.appendChild(row);
+      });
+    }
+
+    window.driveRemove = function(idx) {
+      driveQueue.splice(idx, 1);
+      renderDriveQueue();
+    };
+
+    // ── Convert File to base64 ───────────────────────────────────────────────
+    function fileToBase64(file) {
+      return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload  = function(e) {
+          // Strip the data URL prefix (e.g. "data:application/pdf;base64,")
+          var base64 = e.target.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // ── Upload all queued files (called from saveToSheets) ───────────────────
+    window.driveUploadAll = async function(appCode) {
+      if (!appCode) {
+        toast('⚠ No App Code — files not uploaded to Drive');
+        return [];
+      }
+
+      var toUpload = driveQueue.filter(function(i){ return i.status === 'queued'; });
+      if (!toUpload.length) return [];
+
+      var links = [];
+
+      for (var i = 0; i < driveQueue.length; i++) {
+        if (driveQueue[i].status !== 'queued') continue;
+
+        driveQueue[i].status = 'uploading';
+        renderDriveQueue();
+
+        try {
+          var b64 = await fileToBase64(driveQueue[i].file);
+
+          var resp = await fetch(ILS_SHEET_URL, {
+            method: 'POST',
+            body: JSON.stringify({
+              __action: 'uploadFileToDrive',
+              appCode:  appCode,
+              fileName: driveQueue[i].file.name,
+              mimeType: driveQueue[i].file.type || 'application/octet-stream',
+              fileData: b64
+            })
+          });
+
+          var result = await resp.json();
+
+          if (result.result === 'success') {
+            driveQueue[i].status = 'done';
+            driveQueue[i].url    = result.fileUrl;
+            links.push({ name: driveQueue[i].file.name, url: result.fileUrl });
+            // Update folder link in bar
+            if (result.folderUrl) {
+              var lnk = document.getElementById('driveFolderLink');
+              if (lnk) { lnk.href = result.folderUrl; lnk.textContent = 'Open in Drive ↗'; }
+            }
+          } else {
+            driveQueue[i].status = 'error';
+            console.error('Upload error:', result.message);
+          }
+
+        } catch(e) {
+          driveQueue[i].status = 'error';
+          console.error('Upload exception:', e);
+        }
+
+        renderDriveQueue();
+      }
+
+      // Show summary
+      if (links.length) {
+        var sumBox  = document.getElementById('driveUploadSummary');
+        var sumList = document.getElementById('driveUploadLinks');
+        if (sumBox && sumList) {
+          sumBox.style.display = 'block';
+          sumList.innerHTML = links.map(function(l){
+            return '<a href="' + l.url + '" target="_blank" style="color:#1a6fa8;text-decoration:underline;">' +
+              '📄 ' + l.name + ' ↗</a>';
+          }).join('');
+        }
+      }
+
+      return links;
+    };
+
+    // ── Init on page load ────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      driveCheckCode();
+
+      // Re-check whenever a client is loaded via App Code fetch
+      var fetchBtn = document.getElementById('ilsFetchBtn');
+      if (fetchBtn) {
+        var _orig = fetchBtn.onclick;
+        fetchBtn.addEventListener('click', function() {
+          setTimeout(driveCheckCode, 2000); // wait for fetch to complete
+        });
+      }
+    });
+
+  })();
   </script>
   <script>
 
